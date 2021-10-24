@@ -1,133 +1,145 @@
 const sdk = require("@defillama/sdk");
-//const { Token } = require("graphql");
-const erc20 = require("../helper/abis/erc20.json");
 const abi = require("./abi.json");
-const {
-  sumTokens,
-  sumTokensAndLPs,
-  unwrapUniswapLPs,
-} = require("../helper/unwrapLPs");
-const utils = require("../helper/utils.js");
-const { pool2Exports } = require("../helper/pool2");
-const abiGeneral = require("../helper/abis/masterchef.json");
+const { GraphQLClient, gql } = require('graphql-request')
 const { default: BigNumber } = require("bignumber.js");
-const { isFunction } = require("util");
-const { transformPolygonAddress } = require("../helper/portedTokens");
 const { addFundsInMasterChef } = require("../helper/masterchef");
-const { uniTvlExport, calculateUniTvl } = require("../helper/calculateUniTvl");
+const { toUSDTBalances } = require("../helper/balances");
 
+const usdtAddress = '0xdac17f958d2ee523a2206206994597c13d831ec7';
 
-const MASTERCHEF_CONTRACT = "0x4aA8DeF481d19564596754CD2108086Cf0bDc71B";
-const IRISTETU = "0x8bd49c0106da8618128e56f57e0d4b8d820d9d72";
-const vaultWMATIC = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
-const WMATIC_TOKEN = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
-const APOLLO_TOKEN = "0x64b4d9B111BcA3c7C2d24bc73136d30Bbaca0067";
-const pAPOLLO_TOKEN = "0xe644be5d4d5e7f16f0039cd67bcd438d1a62ef13";
-const MC_APOLLO = "0x12c147e5f46E167008A93A18153b054c70515Aa7";
+const masterchefs = {
+  apollo: "0x66c12e9dC2b3D9Fd5DFe5f54b3Dc5C3D6f2461f4"
+}
 
-const KAVIANWMATICVAULT = "0x75fd7fa818f0d970668dca795b7d79508776a5b1";
-const KAVIANWMATICLP = "0xca2cfc8bf76d9d8eb08e824ee6278f7b885c3b70";
+const vaults = [
+  //IRIS VAULTS
+  { 
+    name: "KAVIAN/WMATIC",
+    vault: "0x75fd7fa818f0d970668dca795b7d79508776a5b1",
+    lpToken: "0xca2cfc8bf76d9d8eb08e824ee6278f7b885c3b70",
+    amm: "quickswap"
+  },
+  {
+    name: "GBNT/WMATIC",
+    vault: "0x483a58Fd4B023CAE2789cd1E1e5F6F52f93df2C7",
+    lpToken: "0xd883c361d1e8a7e1f77d38e0a6e45d897006b798",
+    amm: "polycat"
+  },
+  //APOLLO VAULTS
+  {
+    name: "USDC/WETH",
+    vault: "0x0f8860515B51bBbB3AEe4603Fe8716454a2Ed24C",
+    lpToken: "0x853ee4b2a13f8a742d64c8f088be7ba2131f670d",
+    amm: "quickswap"
+  },
+  {
+    name: "USDC/USDT",
+    vault: "0xaaF43E30e1Aa6ed2dfED9CCD03AbAF7C34B5B8F6",
+    lpToken: "0x2cf7252e74036d1da831d11089d326296e64a728",
+    amm: "quickswap"
+  },
+  {
+    name: "ETH/WMATIC",
+    vault: "0xC12b54BAEc88CC4F28501f90Bb189Ac7132ee97F",
+    lpToken: "0xadbf1854e5883eb8aa7baf50705338739e558e5b",
+    amm: "quickswap"
+  },
+  {
+    name: "BTC/ETH",
+    vault: "0xf32baBB43226DdF187151Eb392c1e7F8C0F4a2BB",
+    lpToken: "0xdc9232e2df177d7a12fdff6ecbab114e2231198d",
+    amm: "quickswap"
+  },
+  {
+    name: "DFYN/ROUTE",
+    vault: "0x467cb3cE716e0801355BFb3b3F4070108E46051f",
+    lpToken: "0xb0dc320ea9eea823a150763abb4a7ba8286cd08b",
+    amm: "dfyn"
+  }
+]
 
-const GBNTWMATICVAULT = "0xA375495919205251a05f3B259B4D3cc30a4d3ED5";
-const GBNTWMATICLP = "0xd883c361d1e8a7e1f77d38e0a6e45d897006b798";
+const ignoreAddr = [
+  "0x75fd7fa818f0d970668dca795b7d79508776a5b1", //godKAVIANWMATIC
+  "0x483a58Fd4B023CAE2789cd1E1e5F6F52f93df2C7", //godGBNTWMATIC
+  "0x0f8860515B51bBbB3AEe4603Fe8716454a2Ed24C", //godUSDCWETH
+  "0xaaF43E30e1Aa6ed2dfED9CCD03AbAF7C34B5B8F6", //godUSDCUSDT
+  "0xC12b54BAEc88CC4F28501f90Bb189Ac7132ee97F", //godETHWMATIC
+  "0xf32baBB43226DdF187151Eb392c1e7F8C0F4a2BB",  //godBTCETH
+  "0x4d1E50D81C7FaFEBF4FC140c4C6eA7Fd1C2F372b", //DYFNLP
+  "0x996B06F25069Cf9F0B88e639f8E1FB22C6558805"  //DFYNLP
+]
 
-const ROUTEDFYNVAULT = "0xD55D83f4f3c67E02B6a37E9eAd2396B9a5C9E3F9";
-const ROUTEDFYNLP = "0xb0dc320ea9eea823a150763abb4a7ba8286cd08b";
+const endpoints = { 
+  quickswap: "https://api.thegraph.com/subgraphs/name/sameepsi/quickswap03",
+  polycat: "https://api.thegraph.com/subgraphs/name/polycatfi/polycat-finance-dex",
+  dfyn: "https://api.thegraph.com/subgraphs/name/ss-sonic/dfyn-v5"
+}
 
-const IRISWMATICVAULT = "0xd74941d4f9202d7e4c550d344507298a4e3ed2dd";
-const IRISWMATICLP = "0xCBd7b263460ad4807dEAdAd3858DE6654f082cA4";
+const query = gql`
+  query get_tvl($lpTokenId: String){
+    pair(
+      id: $lpTokenId
+      ){
+      totalSupply
+      reserveUSD
+    }
+  }
+  `;
 
-const vaultK2WM = async (timestamp, ehtBlock, chainBlocks) => {
-  const balances = {};
+async function getVaultTVL(vaultInfo, chainBlocks){
   const block = chainBlocks.polygon;
   const chain = "polygon";
-  // const transformAddress = (addr) => `polygon:${addr}`;
-  const transformAddress = await transformPolygonAddress();
-  const stackedLP = sdk.api.erc20.balanceOf({
-    target: KAVIANWMATICLP,
-    owner: KAVIANWMATICVAULT,
-    chain: "polygon",
-    block: chainBlocks.polygon,
-  });
-  const lpBalance = (await stackedLP).output;
+  const lpTokenId = vaultInfo.lpToken;
+  var graphQLClient = new GraphQLClient(endpoints[vaultInfo.amm]);
   
-  await unwrapUniswapLPs(balances,
-     [{
-       token: KAVIANWMATICLP,
-       balance: lpBalance
-     }], block, chain, transformAddress);
+  //First, we'll get the totalSupply and the reserves in USD in the AMM 4 this lpToken
+  const pair = await graphQLClient.request(query, {
+    lpTokenId
+  });
+
+  //Then, we get the balance in our vault
+  const balanceCall = sdk.api.abi.call({
+    target: vaultInfo.vault,
+    abi: abi.balance,
+    block: block,
+    chain: chain
+  })
+  const lpBalance = (await balanceCall).output;
+  
+  //Last, the tvl in USD in our vault
+  const usdTvl =  BigNumber(lpBalance).times(pair.pair.reserveUSD).div(pair.pair.totalSupply).div(1e18);
+  
+  return toUSDTBalances(usdTvl)["0xdac17f958d2ee523a2206206994597c13d831ec7"];
+}
+
+const tvlVaults = async (timestamp, ethBlock, chainBlocks) => {
+  let balances = {};
+  for (let i = 0; i < vaults.length; i++) {
+    sdk.util.sumSingleBalance(balances, usdtAddress, await getVaultTVL(vaults[i], chainBlocks));
+  }
+  
   return balances;
 };
 
-const vaultGBWM = async (timestamp, ehtBlock, chainBlocks) => {
+const masterchefTVL = async (timestamp, ethBlock, chainBlocks) => {
   const balances = {};
-  const block = chainBlocks.polygon;
-  const chain = "polygon";
-  // const transformAddress = (addr) => `polygon:${addr}`;
-  const transformAddress = (addr) => `polygon:${addr}`;
-  const stackedLP = sdk.api.erc20.balanceOf({
-    target: GBNTWMATICLP,
-    owner: GBNTWMATICVAULT,
-    chain: "polygon",
-    block: chainBlocks.polygon,
-  });
-  const lpBalance = (await stackedLP).output;
-  await unwrapUniswapLPs(balances,
-     [{
-       token: GBNTWMATICLP,
-       balance: lpBalance
-     }], block, chain, transformAddress);
+  const transformAddress = addr => `polygon:${addr}`;
+  await addFundsInMasterChef(balances, masterchefs.apollo, chainBlocks.polygon, "polygon", transformAddress, undefined, ignoreAddr)
+  
   return balances;
-};
+}
 
-const vaultRODFYN = async (timestamp, ehtBlock, chainBlocks) => {
-  const balances = {};
-  const block = chainBlocks.polygon;
-  const chain = "polygon";
-  // const transformAddress = (addr) => `polygon:${addr}`;
-  const transformAddress = (addr) => `polygon:${addr}`;
-  const stackedLP = sdk.api.erc20.balanceOf({
-    target: ROUTEDFYNLP,
-    owner: ROUTEDFYNVAULT,
-    chain: "polygon",
-    block: chainBlocks.polygon,
-  });
-  const lpBalance = (await stackedLP).output;
-  await unwrapUniswapLPs(balances,
-     [{
-       token: ROUTEDFYNLP,
-       balance: lpBalance
-     }], block, chain, transformAddress);
-  return balances;
-};
-const uniTvl = async (timestamp, ehtBlock, chainBlocks) => {
-  const balances = {};
-  const transformAddress = addr => `polygon:${addr}`;
-  return calculateUniTvl(transformAddress, chainBlocks.polygon, "polygon", "0x570d669b8e2751dfe65bbdd4db3b34b53c9c6d6f", 0, true);
-  // return await uniTvlExport(KAVIANWMATICLP, "polygon");
-}
-const masterchefTVL = async (  chainBlocks) => {
-  const balances = {};
-  const transformAddress = addr => `polygon:${addr}`;
-  await addFundsInMasterChef(balances, MASTERCHEF_CONTRACT, chainBlocks.polygon, "polygon", transformAddress)
-  return balances;
-}
 module.exports = {
   misrepresentedTokens: true,
-  methodology: "TVL comes from Hermes liquidity pools",
-  // vault1: {
-  //   vaultK2WM,
-  // },
-  masterchef: {
-    masterchefTVL,
-  } ,
-  vault: {
-    uniTvl,
+  methodology: "Hermes TVL is calculated from our vaults, which are not native tokens. Pool 2 is based on the TVL of native tokens hosted in our masterchef.",
+  pool2: {
+    masterchefTVL
   },
-    // vaultKAVIANWMATIC: pool2Exports(KAVIANWMATICVAULT, [KAVIANWMATICLP], "polygon"),
-    // vaultGBWMATIC: pool2Exports(GBNTWMATICVAULT, [GBNTWMATICLP], "polygon"),
-    // vaultRODFYN: pool2Exports(ROUTEDFYNVAULT, [ROUTEDFYNLP], "polygon"),
-    // vaultIRISWMATIC: pool2Exports(IRISWMATICVAULT, [IRISWMATICLP], "polygon"),
-  tvl: masterchefTVL,
-  // tvl: sdk.util.sumChainTvls([poolTvl]),
+  vault: {
+    tvlVaults
+  },
+  tvl: sdk.util.sumChainTvls([
+    masterchefTVL,
+    tvlVaults
+  ])
 };
