@@ -8,6 +8,7 @@ const { toUSDTBalances } = require("../helper/balances");
 const usdtAddress = '0xdac17f958d2ee523a2206206994597c13d831ec7';
 
 const masterchefs = {
+  iris: "0x4aA8DeF481d19564596754CD2108086Cf0bDc71B",
   apollo: "0x66c12e9dC2b3D9Fd5DFe5f54b3Dc5C3D6f2461f4"
 }
 
@@ -55,7 +56,8 @@ const vaults = [
     vault: "0x467cb3cE716e0801355BFb3b3F4070108E46051f",
     lpToken: "0xb0dc320ea9eea823a150763abb4a7ba8286cd08b",
     amm: "dfyn"
-  }
+  },
+
 ]
 
 const ignoreAddr = [
@@ -72,7 +74,8 @@ const ignoreAddr = [
 const endpoints = { 
   quickswap: "https://api.thegraph.com/subgraphs/name/sameepsi/quickswap03",
   polycat: "https://api.thegraph.com/subgraphs/name/polycatfi/polycat-finance-dex",
-  dfyn: "https://api.thegraph.com/subgraphs/name/ss-sonic/dfyn-v5"
+  dfyn: "https://api.thegraph.com/subgraphs/name/ss-sonic/dfyn-v5",
+  balancer: "https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2"
 }
 
 const query = gql`
@@ -85,6 +88,39 @@ const query = gql`
     }
   }
   `;
+
+async function getBalancerTVL(chainBlocks){
+  const block = chainBlocks.polygon;
+  const chain = "polygon";
+  const lpTokenId = "0x7320d680ca9bce8048a286f00a79a2c9f8dcd7b3";
+  const balancerAddr = "0x7320d680ca9bce8048a286f00a79a2c9f8dcd7b3000100000000000000000044"
+  var graphQLClient = new GraphQLClient(endpoints.balancer);
+  const queryBal = gql`
+    query get_price($balancerAddr: String){
+      pool(
+        id: $balancerAddr
+        ){
+        totalLiquidity
+        totalShares
+      }
+    }
+    `;
+  const response = await graphQLClient.request(queryBal, {
+    balancerAddr
+  });
+  const price = BigNumber(response.pool.totalLiquidity).div(response.pool.totalShares);
+  const balanceCall = sdk.api.abi.call({
+    target: lpTokenId,
+    abi: abi.balanceof,
+    block: block,
+    params: masterchefs.iris,
+    chain: chain
+  });
+  const lpBalance = (await balanceCall).output;
+  const usdTvl = BigNumber(lpBalance).times(price).div(1e18);
+
+  return toUSDTBalances(usdTvl);
+}
 
 async function getVaultTVL(vaultInfo, chainBlocks){
   const block = chainBlocks.polygon;
@@ -121,6 +157,10 @@ const tvlVaults = async (timestamp, ethBlock, chainBlocks) => {
   return balances;
 };
 
+const tvlBalancer = async (timestamp, ethBlock, chainBlocks) => {
+  return await getBalancerTVL(chainBlocks);
+}
+
 const masterchefTVL = async (timestamp, ethBlock, chainBlocks) => {
   const balances = {};
   const transformAddress = addr => `polygon:${addr}`;
@@ -133,13 +173,15 @@ module.exports = {
   misrepresentedTokens: true,
   methodology: "Hermes TVL is calculated from our vaults, which are not native tokens. Pool 2 is based on the TVL of native tokens hosted in our masterchef.",
   pool2: {
-    masterchefTVL
+    masterchefTVL,
+    tvlBalancer
   },
   vault: {
-    tvlVaults
+    tvlVaults,
   },
   tvl: sdk.util.sumChainTvls([
     masterchefTVL,
+    tvlBalancer,
     tvlVaults
   ])
 };
